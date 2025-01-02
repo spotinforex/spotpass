@@ -1,135 +1,193 @@
-import sqlite3
+from database import Password
 
-class Password:
-    # Initialize the class and connect to the database
-    def __init__(self, db_name="password_manager.db"):
+manager = Password('password_manager.db')  # Instantiating the Password manager class
+
+class Backend:
+    def __init__(self):
+        print('Backend class initialized.')
+        self.user_id = None  # To store logged-in user ID
+
+    def create_account(self):
         try:
-            self.db_name = db_name
-            self.connect = sqlite3.connect(self.db_name)
-            self.cursor = self.connect.cursor()
-            print('Successfully connected to the database.')
-            self.create_table()
-        except Exception as e:
-            print(f"An Error Occurred: {e}")
+            manager.ensure_connection() # optionally ensures that connect is active.  
+            first_name = input("First Name: ").strip()
+            last_name = input("Last Name: ").strip()
+            email = input("Email: ").strip()
+            username = input("Username: ").strip()
+            password = input("Password: ").strip()
+            encrypted_password = manager.encrypt_password(password)
 
-    # Create the table if it doesn't exist
-    def create_table(self):
+            query = '''INSERT INTO users (first_name, last_name, email, username, password)
+                       VALUES (?, ?, ?, ?, ?)'''
+            manager.cursor.execute(query, (first_name, last_name, email, username, encrypted_password))
+            manager.connect.commit()
+            print("Account created successfully.")
+            self.login()  # Optionally prompt the user to log in immediately
+        except Exception as e:
+            print(f"Error creating account: {e}")
+
+    def login(self):
         try:
-            self.cursor.execute('''
-                CREATE TABLE IF NOT EXISTS password_manager (
-                    id INTEGER PRIMARY KEY,
-                    website TEXT NOT NULL,
-                    password TEXT NOT NULL
-                )
-            ''')
-            self.connect.commit()
-        except Exception as e:
-            print(f"Error creating table: {e}")
+            manager.ensure_connection()
+            username = input("Username: ").strip()
+            password = input("Password: ").strip()
 
-    # Add a new password to the database
+            query = '''SELECT user_id, password FROM users WHERE username = ?'''
+            manager.cursor.execute(query, (username,))
+            user = manager.cursor.fetchone()
+
+            if user:
+                user_id, encrypted_password = user
+                decrypted_password = manager.decrypt_password(encrypted_password)
+                if decrypted_password == password:
+                    self.user_id = user_id  # Store the logged-in user's ID
+                    print("Login successful!")
+                    
+                else:
+                    print("Invalid password.")
+            else:
+                print("Invalid username.")
+        except Exception as e:
+            print (f'An error occurred as {e}')
+
     def add_password(self):
         try:
-            add_id = int(input('Please input password ID: '))
-            add_website = input('Please input website: ').strip()
-            add_password = input('Please input password: ').strip()
-
-            if not add_website or not add_password:
-                print("Website and password cannot be empty. Please try again.")
+            manager.ensure_connection()
+            if not self.user_id: # Ensure that password adding cannot be acccessed without a login
+                print("Please log in to add a password.")
                 return
 
-            insert_query = "INSERT INTO password_manager (id, website, password) VALUES (?, ?, ?)"
-            self.cursor.execute(insert_query, (add_id, add_website, add_password))
-            self.connect.commit()
-            print('Password added successfully.')
-        except sqlite3.IntegrityError:
-            print("ID already exists. Use a unique ID.")
-        except ValueError:
-            print("Invalid ID. Please enter a numeric value.")
+            website = input("Website: ").strip()
+            password = input("Password: ").strip()
+            encrypted_password = manager.encrypt_password(password)
+
+            query = '''INSERT INTO passwords (user_id, website, password) VALUES (?, ?, ?)'''
+            manager.cursor.execute(query, (self.user_id, website, encrypted_password))
+            manager.connect.commit()
+            print("Password added successfully.")
         except Exception as e:
             print(f"An error occurred: {e}")
 
-    # Find a password in the database
     def find_password(self):
         try:
-            find_password_id = input('Please input ID (leave blank if not available): ')
-            find_password_website = input('Please input Website (leave blank if not available): ')
+            manager.ensure_connection()
+            if not self.user_id:
+                print("Please log in to find a password.")
+                return
 
-            if find_password_id and find_password_website:
-                find_sql = 'SELECT * FROM password_manager WHERE id = ? OR website = ?'
-                self.cursor.execute(find_sql, (find_password_id, find_password_website))
-            elif find_password_id:
-                find_sql = 'SELECT * FROM password_manager WHERE id = ?'
-                self.cursor.execute(find_sql, (find_password_id,))
-            elif find_password_website:
-                find_sql = 'SELECT * FROM password_manager WHERE website = ?'
-                self.cursor.execute(find_sql, (find_password_website,))
+            find_password_website = input('Please input Website (leave blank if not available): ').strip()
+            
+            if find_password_website:
+                query = '''SELECT website, password FROM passwords WHERE website = ? AND user_id = ?'''
+                manager.cursor.execute(query, (find_password_website, self.user_id))
             else:
                 print("No input provided. Please enter either ID or Website.")
                 return
 
-            rows = self.cursor.fetchall()
-            if rows:
-                print("Record(s) found:")
-                for row in rows:
-                    print(row)
+            records = manager.cursor.fetchall()
+
+            if records: # statements checks if passwords are found 
+                for website, encrypted_password in records:
+                    decrypted_password = manager.decrypt_password(encrypted_password)
+                    print(f"Website: {website}\nPassword: {decrypted_password}")
             else:
                 print("No records found.")
         except Exception as e:
             print(f"Error finding password: {e}")
+    def update_password(self):
+        try:
+        # Ensure the database connection is active
+          manager.ensure_connection()
 
-    # View all passwords in the database
+          if not hasattr(self, 'user_id') or not self.user_id:
+              print("Please log in to update a password.")
+              return
+
+        # Gather inputs
+          website = input("Website: ").strip()
+          updated_password = input("Please type in the updated password: ").strip()
+
+        # Validate inputs
+          if not website:
+              print("Please input a website to update.")
+              return
+          if not updated_password:
+              print("Please input the updated password.")
+              return
+
+        # Encrypt the new password
+          encrypted_password = manager.encrypt_password(updated_password)
+
+        # Execute the update query
+          query = '''UPDATE passwords SET password = ? WHERE website = ? AND user_id = ?'''
+          manager.cursor.execute(query, (encrypted_password, website, self.user_id))
+          manager.connect.commit()
+
+        # Check if the update affected any rows
+          if manager.cursor.rowcount > 0:
+              print("Password updated successfully.")
+          else:
+              print("No record found for this website under your account.")
+        except Exception as e:
+            print(f"Error Updating password: {e}")
+    
     def view_password(self):
-        try:
-            self.cursor.execute('SELECT * FROM password_manager')
-            rows = self.cursor.fetchall()
-            if rows:
-                for row in rows:
-                    print(row)
-            else:
-                print("No passwords found in the manager.")
-        except Exception as e:
-            print(f"Error viewing passwords: {e}")
+     try:
+        # Ensure a logged-in user
+          if not hasattr(self, 'user_id') or not self.user_id:
+              print("Please log in to view your saved passwords.")
+              return
 
-    # View a specific number of passwords
-    def view_number_of_password(self):
-        try:
-            query = 'SELECT * FROM password_manager LIMIT ?'
-            number_to_view = int(input('Please input the number of passwords to view: '))
-            self.cursor.execute(query, (number_to_view,))
-            rows = self.cursor.fetchall()
+        # Fetch passwords for the logged-in user
+          query = '''SELECT website, password FROM passwords WHERE user_id = ?'''
+          manager.cursor.execute(query, (self.user_id,))
+          rows = manager.cursor.fetchall()
 
-            if rows:
-                print(f"Displaying the first {number_to_view} password(s):")
-                for row in rows:
-                    print(row)
-            else:
-                print("No passwords found in the manager.")
-        except ValueError:
-            print("Please enter a valid number.")
-        except Exception as e:
-            print(f"Error viewing passwords: {e}")
-
-    # Delete a password
+        # Display results if any are found
+          if rows:
+              print("Your saved passwords:")
+              for website, encrypted_password in rows:
+                  decrypted_password = manager.decrypt_password(encrypted_password)
+                  print(f"Website: {website} | Password: {decrypted_password}")
+          else:
+              print("No saved passwords found for your account.")
+     except Exception as e:
+          print(f"Error Veiwing password: {e}")
+    
     def delete_password(self):
+     try:
+          # Ensure a logged-in user
+          if not hasattr(self, 'user_id') or not self.user_id:
+              print("Please log in to delete a password.")
+              return
+
+          # Input for website or password ID
+          website = input("Please input the website of the password to delete: ").strip()
+
+          if not website:
+              print("Website cannot be empty.")
+              return
+
+          # Query to delete the password
+          query = '''DELETE FROM passwords WHERE user_id = ? AND website = ?'''
+          manager.cursor.execute(query, (self.user_id, website))
+          manager.connect.commit()
+
+          # Feedback based on rows affected
+          if manager.cursor.rowcount > 0:
+              print("Password deleted successfully.")
+          else:
+              print("No matching record found.")
+     except Exception as e:
+          print(f"Error deleting password: {e}")
+    
+    def close_connection(self): # closes and logs the user out of the database
         try:
-            user_password = input("Please input user's password: ")
-            passw = "Praisejah"
-            if user_password == passw:
-                delete_password = int(input('Please input password ID to delete: '))
-                self.cursor.execute('DELETE FROM password_manager WHERE id = ?', (delete_password,))
-                self.connect.commit()
-                print("Password deleted successfully.")
-            else:
-                print("Incorrect password. Try again.")
+          if not hasattr(self, 'user_id') or not self.user_id:
+                print("Please log in to delete a password.")
+                return 
+          manager.cursor.close()
+          manager.connect.close()
+          print("Database connection closed.")
         except Exception as e:
-            print(f"Error deleting password: {e}")
-
-    # Close the database connection
-    def close_connection(self):
-        self.connect.close()
-        print("Database connection closed.")
-
-
-# Test the class if this file is executed
-if __name__ == "__main__":
-    print("another_password_manager.py is working correctly.")
+            print(f"Error closing database: {e}")
