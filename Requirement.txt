@@ -1,2 +1,3 @@
-wxpython
+os
+cryptography
 sqlite3
