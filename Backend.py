@@ -1,87 +1,134 @@
+from flask import jsonify
+import sqlite3
+import re
 from database import Password
+from inputvalidator import Format 
 
-manager = Password('password_manager.db')  # Instantiating the Password manager class
+manager = Password('password_storage.db')  # Instantiating the Password manager class
+validator = Format()
 
 class Backend:
     def __init__(self):
-        print('Backend class initialized.')
         self.user_id = None  # To store logged-in user ID
 
-    def create_account(self):
+    def create_account(self, first_name, last_name, email, username, password=None):
         try:
-            manager.ensure_connection() # optionally ensures that connect is active.  
-            first_name = input("First Name: ").strip()
-            last_name = input("Last Name: ").strip()
-            email = input("Email: ").strip()
-            username = input("Username: ").strip()
-            password = input("Password: ").strip()
+            manager.ensure_connection()
+            
+            # Validate inputs
+            checker, error = validator.get_valid_string(first_name)
+            if not checker:
+                return jsonify({"success": False, "error": error})
+            
+            checker, error = validator.get_valid_string(last_name)
+            if not checker:
+                return jsonify({"success": False, "error": error})
+            
+            checker, error = validator.is_valid_email(email)
+            if not checker:
+                return jsonify({"success": False, "error": error})
+            
+            checker, error = validator.get_valid_string(username)
+            if not checker:
+                return jsonify({"success": False, "error": error})
+            
+            if not password:
+                password = self.generate_password()
+            
+            checker, error = validator.is_strong_password(password)
+            if not checker:
+                return jsonify({"success": False, "error": error})
+            
             encrypted_password = manager.encrypt_password(password)
-
+            
+            # Insert into the database
             query = '''INSERT INTO users (first_name, last_name, email, username, password)
                        VALUES (?, ?, ?, ?, ?)'''
             manager.cursor.execute(query, (first_name, last_name, email, username, encrypted_password))
             manager.connect.commit()
-            print("Account created successfully.")
-            self.login()  # Optionally prompt the user to log in immediately
+            
+            return jsonify({"success": True, "message": "Account created successfully.", "generated_password": password})
+        
+        except sqlite3.IntegrityError as e:
+            if "username" in str(e):
+                return jsonify({"success": False, "error": "Username already exists."})
+            elif "email" in str(e):
+                return jsonify({"success": False, "error": "Email already exists."})
+            else:
+                return jsonify({"success": False, "error": "Database integrity error."})
+        
         except Exception as e:
-            print(f"Error creating account: {e}")
-
-    def login(self):
+            return jsonify({"success": False, "error": f"Unexpected error: {e}"})
+    
+    def login(self, username, password):
         try:
             manager.ensure_connection()
-            username = input("Username: ").strip()
-            password = input("Password: ").strip()
-
+            
+            # Validate inputs
+            if not username:
+                return jsonify({"success": False, "error": "Username cannot be empty."})
+            if not password:
+                 return jsonify({"success": False, "error": "Password cannot be empty."})
+            # Query database
             query = '''SELECT user_id, password FROM users WHERE username = ?'''
             manager.cursor.execute(query, (username,))
             user = manager.cursor.fetchone()
-
+            
             if user:
                 user_id, encrypted_password = user
                 decrypted_password = manager.decrypt_password(encrypted_password)
                 if decrypted_password == password:
-                    self.user_id = user_id  # Store the logged-in user's ID
-                    print("Login successful!")
-                    
+                    self.user_id = user_id
+                    return jsonify({"success": True, "message": "Login successful."})
                 else:
-                    print("Invalid password.")
+                    return jsonify({"success": False, "error": "Invalid password."})
             else:
-                print("Invalid username.")
+                return jsonify({"success": False, "error": "Invalid username."})
+        
         except Exception as e:
-            print (f'An error occurred as {e}')
-
-    def add_password(self):
-        try:
-            manager.ensure_connection()
-            if not self.user_id: # Ensure that password adding cannot be acccessed without a login
-                print("Please log in to add a password.")
-                return
-
-            website = input("Website: ").strip()
-            password = input("Password: ").strip()
-            encrypted_password = manager.encrypt_password(password)
-
-            query = '''INSERT INTO passwords (user_id, website, password) VALUES (?, ?, ?)'''
-            manager.cursor.execute(query, (self.user_id, website, encrypted_password))
-            manager.connect.commit()
-            print("Password added successfully.")
-        except Exception as e:
-            print(f"An error occurred: {e}")
-
-    def find_password(self):
+            return jsonify({"success": False, "error": f"Unexpected error: {e}"})
+    
+    def add_password(self, website, password=None):
         try:
             manager.ensure_connection()
             if not self.user_id:
-                print("Please log in to find a password.")
-                return
+                return jsonify({"success": False, "error": "You must log in before adding a password."})
+            
+            if not re.match(r'^(https?://)?(www\.)?[a-zA-Z0-9-]+(\.[a-zA-Z]{2,})+$', website):
+                return jsonify({"success": False, "error": "Invalid website format."})
+            
+            if not password:
+                password = self.generate_password()
+            
+            checker, error = validator.is_strong_password(password)
+            if not checker:
+                return jsonify({"success": False, "error": error})
+            
+            encrypted_password = manager.encrypt_password(password)
+            
+            query = '''INSERT INTO passwords (user_id, website, password) VALUES (?, ?, ?)'''
+            manager.cursor.execute(query, (self.user_id, website, encrypted_password))
+            manager.connect.commit()
+            
+            return jsonify({"success": True, "message": f"Password for {website} added successfully."})
+        
+        except sqlite3.IntegrityError as ie:
+            return jsonify({"success": False, "error": f"Database integrity error: {ie}"})
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Unexpected error: {e}"})
 
-            find_password_website = input('Please input Website (leave blank if not available): ').strip()
+    def find_password(self,password_website):
+        try:
+            manager.ensure_connection()
+            if not self.user_id:
+                return jsonify({"success": False, "error": "Please log in to find a password."})
+                
             
             if find_password_website:
                 query = '''SELECT website, password FROM passwords WHERE website = ? AND user_id = ?'''
-                manager.cursor.execute(query, (find_password_website, self.user_id))
+                manager.cursor.execute(query, (password_website, self.user_id))
             else:
-                print("No input provided. Please enter either ID or Website.")
+                return jsonify({"success": False, "error": "No input provided. Please enter a Website."})
                 return
 
             records = manager.cursor.fetchall()
@@ -89,105 +136,160 @@ class Backend:
             if records: # statements checks if passwords are found 
                 for website, encrypted_password in records:
                     decrypted_password = manager.decrypt_password(encrypted_password)
-                    print(f"Website: {website}\nPassword: {decrypted_password}")
+                    return jsonify({"success": True, "message": f"Website: {website}\nPassword: {decrypted_password}"})
             else:
-                print("No records found.")
+                return jsonify({"success": False, "error": "No records found"})
         except Exception as e:
-            print(f"Error finding password: {e}")
-    def update_password(self):
-        try:
+            return jsonify({"success": False, "error": f"Unexpected error: {e}"})
+    def update_password(self, website,updated_password,confirm_password):
+     try:
         # Ensure the database connection is active
-          manager.ensure_connection()
+         manager.ensure_connection()
 
-          if not hasattr(self, 'user_id') or not self.user_id:
-              print("Please log in to update a password.")
-              return
+        # Check login state
+         if not self.user_id:
+            return jsonify({"success": False, "error": "Please log in to update a password."})
 
-        # Gather inputs
-          website = input("Website: ").strip()
-          updated_password = input("Please type in the updated password: ").strip()
+        # Validate website input
+         if not website:
+            return jsonify({"success": False, "error": "Please input a website to update."})
 
-        # Validate inputs
-          if not website:
-              print("Please input a website to update.")
-              return
-          if not updated_password:
-              print("Please input the updated password.")
-              return
+        # Check if the website exists for the logged-in user
+         query = '''SELECT password FROM passwords WHERE website = ? AND user_id = ?'''
+         manager.cursor.execute(query, (website, self.user_id))
+         existing_password = manager.cursor.fetchone()
+
+         if not existing_password:
+             return jsonify({"success": False, "error": "No record found for this website under your account."})
+
+        # Auto-generate password if left blank
+         if not updated_password:
+             updated_password = self.generate_password()
+             if not updated_password:
+                 return jsonify({"success": False, "error": "Failed to generate a password. Please try again."})
+
+        # Validate password strength
+         is_valid, error = validator.is_strong_password(updated_password)
+         if not is_valid:
+             return jsonify({"success": False, "error": f"Password strength issue: {error}"})
+
+        # Confirm password
+         if updated_password != confirm_password:
+             return {"success": False, "error": "Passwords do not match. Please try again."}
 
         # Encrypt the new password
-          encrypted_password = manager.encrypt_password(updated_password)
+         encrypted_password = manager.encrypt_password(updated_password)
 
         # Execute the update query
-          query = '''UPDATE passwords SET password = ? WHERE website = ? AND user_id = ?'''
-          manager.cursor.execute(query, (encrypted_password, website, self.user_id))
-          manager.connect.commit()
+         update_query = '''UPDATE passwords SET password = ? WHERE website = ? AND user_id = ?'''
+         manager.cursor.execute(update_query, (encrypted_password, website, self.user_id))
+         manager.connect.commit()
 
-        # Check if the update affected any rows
-          if manager.cursor.rowcount > 0:
-              print("Password updated successfully.")
-          else:
-              print("No record found for this website under your account.")
-        except Exception as e:
-            print(f"Error Updating password: {e}")
-    
+        # Confirm success
+         if manager.cursor.rowcount > 0:
+             return jsonify({"success": True, "message": "Password updated successfully."})
+         else:
+             return jsonify({"success": False, "error": "Could not update the password. Please try again."})
+
+     except sqlite3.DatabaseError as db_error:
+         return jsonify({"success": False, "error": f"Database error: {db_error}"})
+     except Exception as e:
+         return jsonify({"success": False, "error": f"Unexpected error: {e}"})
     def view_password(self):
      try:
         # Ensure a logged-in user
-          if not hasattr(self, 'user_id') or not self.user_id:
-              print("Please log in to view your saved passwords.")
-              return
+         if not hasattr(self, 'user_id') or not self.user_id:
+             return jsonify({"success": False, "error": "Please log in to view your saved passwords."}), 400
 
         # Fetch passwords for the logged-in user
-          query = '''SELECT website, password FROM passwords WHERE user_id = ?'''
-          manager.cursor.execute(query, (self.user_id,))
-          rows = manager.cursor.fetchall()
+         query = '''SELECT website, password FROM passwords WHERE user_id = ?'''
+         manager.cursor.execute(query, (self.user_id,))
+         rows = manager.cursor.fetchall()
 
         # Display results if any are found
-          if rows:
-              print("Your saved passwords:")
-              for website, encrypted_password in rows:
-                  decrypted_password = manager.decrypt_password(encrypted_password)
-                  print(f"Website: {website} | Password: {decrypted_password}")
-          else:
-              print("No saved passwords found for your account.")
+         if rows:
+             passwords = [{"website": website, "password": manager.decrypt_password(encrypted_password)} for website, encrypted_password in rows]
+             return jsonify({"success": True, "passwords": passwords}), 200
+         else:
+             return jsonify({"success": False, "message": "No saved passwords found for your account."}), 404
      except Exception as e:
-          print(f"Error Veiwing password: {e}")
-    
-    def delete_password(self):
+         return jsonify({"success": False, "error": f"Error viewing password: {e}"}), 500
+    def delete_password(self,website):
      try:
-          # Ensure a logged-in user
-          if not hasattr(self, 'user_id') or not self.user_id:
-              print("Please log in to delete a password.")
-              return
+        # Ensure a logged-in user
+         if not hasattr(self, 'user_id') or not self.user_id:
+             return jsonify({"success": False, "error": "Please log in to delete a password."}), 400
 
-          # Input for website or password ID
-          website = input("Please input the website of the password to delete: ").strip()
+        
+        # Validate input
+         if not website:
+             return jsonify({"success": False, "error": "Website cannot be empty. Please provide a valid website."}), 400
 
-          if not website:
-              print("Website cannot be empty.")
-              return
+        # Query to delete the password
+         query = '''DELETE FROM passwords WHERE user_id = ? AND website = ?'''
+         manager.cursor.execute(query, (self.user_id, website))
+         manager.connect.commit()
 
-          # Query to delete the password
-          query = '''DELETE FROM passwords WHERE user_id = ? AND website = ?'''
-          manager.cursor.execute(query, (self.user_id, website))
-          manager.connect.commit()
-
-          # Feedback based on rows affected
-          if manager.cursor.rowcount > 0:
-              print("Password deleted successfully.")
-          else:
-              print("No matching record found.")
+        # Feedback based on rows affected
+         if manager.cursor.rowcount > 0:
+             return jsonify({"success": True, "message": f"Password for website '{website}' deleted successfully."}), 200
+         else:
+             return jsonify({"success": False, "message": f"No matching record found for website '{website}'."}), 404
+     except sqlite3.DatabaseError as db_error:
+         return jsonify({"success": False, "error": f"Database error while deleting password: {db_error}"}), 500
      except Exception as e:
-          print(f"Error deleting password: {e}")
-    
-    def close_connection(self): # closes and logs the user out of the database
+         return jsonify({"success": False, "error": f"Unexpected error deleting password: {e}"}), 500
+    def generate_password(self):
         try:
-          if not hasattr(self, 'user_id') or not self.user_id:
-                print("Please log in to delete a password.")
-                return 
-          manager.cursor.close()
-          manager.connect.close()
-          print("Database connection closed.")
+            # Define character sets
+            lowercase = string.ascii_lowercase
+            uppercase = string.ascii_uppercase
+            digits = string.digits
+            punctuation = string.punctuation
+
+            # Combine all character sets
+            all_characters = lowercase + uppercase + digits + punctuation
+
+            # Prompt for password length
+            length = 12
+
+            if not length.isdigit() or int(length) < 11:
+                return jsonify({"success": False, "error": "Invalid or no input. Using default length of 12."}), 400
+
+            length = int(length)
+
+            if length < 4:  # Minimum length to accommodate at least one of each type
+                return jsonify({"success": False, "error": "Password length too short. Using default length of 12."}), 400
+
+            # Guarantee inclusion of at least one character from each set
+            password = [
+                secrets.choice(lowercase),
+                secrets.choice(uppercase),
+                secrets.choice(digits),
+                secrets.choice(punctuation),
+            ]
+
+            # Fill the rest of the password length with random choices from all characters
+            password += [secrets.choice(all_characters) for _ in range(length - 4)]
+
+            # Shuffle to randomize character positions
+            secrets.SystemRandom().shuffle(password)
+
+            # Join list into a string and return the password
+            return jsonify({"success": True, "password": ''.join(password)}), 200
+
         except Exception as e:
-            print(f"Error closing database: {e}")
+            return jsonify({"success": False, "error": f"An error occurred during password generation: {e}"}), 500
+
+    def close_connection(self):
+        try:
+            # Check if the user is logged in
+            if not hasattr(self, 'user_id') or not self.user_id:
+                return jsonify({"success": False, "error": "Please log in to close the connection."}), 400
+
+            manager.cursor.close()
+            manager.connect.close()
+
+            return jsonify({"success": True, "message": "Database connection closed."}), 200
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Error closing database: {e}"}), 500
